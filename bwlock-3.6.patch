@@ -1,0 +1,165 @@
+diff --git a/arch/x86/syscalls/syscall_64.tbl b/arch/x86/syscalls/syscall_64.tbl
+index a582bfe..2091eb5 100644
+--- a/arch/x86/syscalls/syscall_64.tbl
++++ b/arch/x86/syscalls/syscall_64.tbl
+@@ -319,7 +319,7 @@
+ 310	64	process_vm_readv	sys_process_vm_readv
+ 311	64	process_vm_writev	sys_process_vm_writev
+ 312	common	kcmp			sys_kcmp
+-
++323	64	bwlock			sys_bwlock
+ #
+ # x32-specific system call numbers start at 512 to avoid cache impact
+ # for native 64-bit operation.
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 23bddac..a2de20b 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1253,6 +1253,10 @@ struct task_struct {
+ 	struct task_group *sched_task_group;
+ #endif
+ 
++#ifdef CONFIG_BWLOCK
++	int bwlock_val;
++#endif
++
+ #ifdef CONFIG_PREEMPT_NOTIFIERS
+ 	/* list of struct preempt_notifier: */
+ 	struct hlist_head preempt_notifiers;
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 19439c7..bd9efd7 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -860,4 +860,6 @@ asmlinkage long sys_process_vm_writev(pid_t pid,
+ 
+ asmlinkage long sys_kcmp(pid_t pid1, pid_t pid2, int type,
+ 			 unsigned long idx1, unsigned long idx2);
++
++asmlinkage long sys_bwlock(pid_t pid, int val);
+ #endif
+diff --git a/init/Kconfig b/init/Kconfig
+index af6c7f8..5436bbc 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -848,6 +848,11 @@ config DEBUG_BLK_CGROUP
+ 
+ endif # CGROUPS
+ 
++config BWLOCK
++	bool "Enable BWLOCK: Memory Bandwidth Lock"
++	help
++	  Enable BWLOCK: Memory Bandwidth Lock (work with MemGuard)
++
+ config CHECKPOINT_RESTORE
+ 	bool "Checkpoint/restore support" if EXPERT
+ 	default n
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 649c9f8..26260f8 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -1906,10 +1906,20 @@ fire_sched_out_preempt_notifiers(struct task_struct *curr,
+  * prepare_task_switch sets up locking and calls architecture specific
+  * hooks.
+  */
++
++#if CONFIG_BWLOCK
++atomic_t bwlock_core_cnt; 
++EXPORT_SYMBOL(bwlock_core_cnt);
++
+ static inline void
+ prepare_task_switch(struct rq *rq, struct task_struct *prev,
+ 		    struct task_struct *next)
+ {
++	/* if (prev->bwlock_val > 0 && next->bwlock_val == 0) */
++	/* 	atomic_dec(&bwlock_core_cnt); */
++	/* else if (prev->bwlock_val == 0 && next->bwlock_val > 0) */
++	/* 	atomic_inc(&bwlock_core_cnt); */
++
+ 	trace_sched_switch(prev, next);
+ 	sched_info_switch(prev, next);
+ 	perf_event_task_sched_out(prev, next);
+@@ -1918,6 +1928,20 @@ prepare_task_switch(struct rq *rq, struct task_struct *prev,
+ 	prepare_arch_switch(next);
+ }
+ 
++#else /* !CONFIG_BWLOCK */
++static inline void
++prepare_task_switch(struct rq *rq, struct task_struct *prev,
++		    struct task_struct *next)
++{
++	trace_sched_switch(prev, next);
++	sched_info_switch(prev, next);
++	perf_event_task_sched_out(prev, next);
++	fire_sched_out_preempt_notifiers(prev, next);
++	prepare_lock_switch(rq, next);
++	prepare_arch_switch(next);
++}
++#endif
++
+ /**
+  * finish_task_switch - clean up after a task-switch
+  * @rq: runqueue associated with task-switch
+@@ -2092,6 +2116,18 @@ context_switch(struct rq *rq, struct task_struct *prev,
+ 	finish_task_switch(this_rq(), prev);
+ }
+ 
++
++int nr_bwlocked_cores(void)
++{
++	unsigned long i, sum = 0;
++
++	for_each_online_cpu(i)
++		sum += cpu_rq(i)->curr->bwlock_val;
++	return sum;
++}
++
++EXPORT_SYMBOL(nr_bwlocked_cores);
++
+ /*
+  * nr_running, nr_uninterruptible and nr_context_switches:
+  *
+@@ -4451,6 +4487,33 @@ do_sched_setscheduler(pid_t pid, int policy, struct sched_param __user *param)
+ 	return retval;
+ }
+ 
++
++/**
++ * sys_bwlock - memory bandwidth lock
++ * @pid: pid of the process
++ * @val: bwlock value. 0 - unlock, 1 or bigger - locked
++ */
++SYSCALL_DEFINE2(bwlock, pid_t, pid, int, val)
++{
++	struct task_struct *p;
++	if (pid == 0 || current->pid == pid)
++		p = current;
++	else
++		p = find_process_by_pid(pid);
++
++	if (!p)
++		return -1;
++
++	/* if (val > 0 && p->bwlock_val == 0 && p->state == TASK_RUNNING) */
++	/* 	atomic_inc(&bwlock_core_cnt); */
++	/* else if (val == 0 && p->bwlock_val > 0 && p->state == TASK_RUNNING) */
++	/* 	atomic_dec(&bwlock_core_cnt); */
++
++	p->bwlock_val = val;
++
++	return 0; 
++}
++
+ /**
+  * sys_sched_setscheduler - set/change the scheduler policy and RT priority
+  * @pid: the pid in question.
+@@ -7211,6 +7274,10 @@ void __init sched_init(void)
+ 	int i, j;
+ 	unsigned long alloc_size = 0, ptr;
+ 
++#ifdef CONFIG_BWLOCK
++	atomic_set(&bwlock_core_cnt, 0);
++#endif
++
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 	alloc_size += 2 * nr_cpu_ids * sizeof(void **);
+ #endif
