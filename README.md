@@ -2,6 +2,10 @@ BWLOCK: memory bandwidth control API
 
 Heechul Yun <heechul.yun@ku.edu>
 
+In multicore platforms, memory intensive code sections of a program can be significantly 
+delayed by other memory intensive programs running in parallel due to memory bandwidth contention. 
+BWLOCK provides explicit ways to mitigate memory bandwidth contention to protect performance of 
+real-time applications without any special hardware support. 
 
 Preparation
 ===========
