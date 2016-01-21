@@ -266,7 +266,7 @@ static void bwlockmod_on_each_cpu_mask(const struct cpumask *mask,
 	}
 }
 
-static int __cpuinit bwlockmod_cpu_callback(struct notifier_block *nfb,
+static int bwlockmod_cpu_callback(struct notifier_block *nfb,
 					 unsigned long action, void *hcpu)
 {
 	unsigned int cpu = (unsigned long)hcpu;
@@ -284,7 +284,7 @@ static int __cpuinit bwlockmod_cpu_callback(struct notifier_block *nfb,
 	return NOTIFY_OK;
 }
 
-static struct notifier_block __cpuinitdata bwlockmod_cpu_notifier =
+static struct notifier_block bwlockmod_cpu_notifier =
 {
 	.notifier_call = bwlockmod_cpu_callback,
 };
